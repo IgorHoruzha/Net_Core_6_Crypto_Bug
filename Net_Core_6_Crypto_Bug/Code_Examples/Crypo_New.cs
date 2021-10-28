@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace Net_Core_6_Crypto_Bug.Code_Examples
 {
@@ -17,24 +18,24 @@ namespace Net_Core_6_Crypto_Bug.Code_Examples
         // This constant determines the number of iterations for the password bytes generation function.
         private const int DerivationIterations = 5000;
 
-        public static string Encrypt(string to_encrypt, string key)
+        public static async Task<string> Encrypt(string to_encrypt, string key)
         {
             byte[] data = Encoding.Default.GetBytes(to_encrypt);
-            byte[] crypted = Encrypt(data, key);
+            byte[] crypted = await Encrypt(data, key).ConfigureAwait(false);
             return JsonSerializer.Serialize(crypted);
         }
 
-        public static string Decrypt(String cryptedText, string key)
+        public static async Task<string> Decrypt(string cryptedText, string key)
         {
             byte[] data = JsonSerializer.Deserialize<byte[]>(cryptedText) ?? throw new ArgumentNullException(cryptedText);
-            byte[] crypted = Decrypt(data, key);
+            byte[] crypted = await DecryptAsync(data, key).ConfigureAwait(false);
 
             var result = Encoding.Default.GetString(crypted);
 
             return result;
         }
 
-        public static byte[] Encrypt(byte[] plainTextBytes, string passPhrase)
+        public static async Task<byte[]> Encrypt(byte[] plainTextBytes, string passPhrase)
         {
             // Salt and IV is randomly generated each time, but is preprended to encrypted cipher text
             // so that the same Salt and IV values can be used when decrypting.  
@@ -50,24 +51,23 @@ namespace Net_Core_6_Crypto_Bug.Code_Examples
             aes.Padding = PaddingMode.PKCS7;
 
             using var encryptor = aes.CreateEncryptor(keyBytes, ivStringBytes);
-            using var memoryStream = new MemoryStream();
-            using var cryptoStream = new CryptoStream(memoryStream, encryptor, CryptoStreamMode.Write);
-            cryptoStream.Write(plainTextBytes, 0, plainTextBytes.Length);
-            cryptoStream.FlushFinalBlock();
+            await using var memoryStream = new MemoryStream();
+            memoryStream.ConfigureAwait(false);
+            await using var cryptoStream = new CryptoStream(memoryStream, encryptor, CryptoStreamMode.Write);
+            cryptoStream.ConfigureAwait(false);
+            await cryptoStream.WriteAsync(plainTextBytes, 0, plainTextBytes.Length).ConfigureAwait(false);
+            await cryptoStream.FlushFinalBlockAsync().ConfigureAwait(false);
             // Create the final bytes as a concatenation of the random salt bytes, the random iv bytes and the cipher bytes.
             var cipherTextBytes = saltStringBytes;
             cipherTextBytes = cipherTextBytes.Concat(ivStringBytes).ToArray();
             cipherTextBytes = cipherTextBytes.Concat(memoryStream.ToArray()).ToArray();
-            memoryStream.Close();
-            cryptoStream.Close();
+
             return cipherTextBytes;
         }
 
-        public static byte[] Decrypt(byte[] cipherTextBytesWithSaltAndIv, string passPhrase)
+        public static async Task<byte[]> DecryptAsync(byte[] cipherTextBytesWithSaltAndIv, string passPhrase)
         {
-            // Get the complete stream of bytes that represent:
-            // [32 bytes of Salt] + [32 bytes of IV] + [n bytes of CipherText]
-
+          
             // Get the saltbytes by extracting the first 32 bytes from the supplied cipherText bytes.
             var saltStringBytes = cipherTextBytesWithSaltAndIv.Take(Keysize / 8).ToArray();
             // Get the IV bytes by extracting the next 32 bytes from the supplied cipherText bytes.
@@ -83,27 +83,29 @@ namespace Net_Core_6_Crypto_Bug.Code_Examples
             aes.Padding = PaddingMode.PKCS7;
 
             using var decryptor = aes.CreateDecryptor(keyBytes, ivStringBytes);
-            using var memoryStream = new MemoryStream(cipherTextBytes);
-            using var cryptoStream = new CryptoStream(memoryStream, decryptor, CryptoStreamMode.Read);
+            await using var memoryStream = new MemoryStream(cipherTextBytes);
+            memoryStream.ConfigureAwait(false);
+            await using var cryptoStream = new CryptoStream(memoryStream, decryptor, CryptoStreamMode.Read);
+            cryptoStream.ConfigureAwait(false);
             var plainTextBytes = new byte[cipherTextBytes.Length];
-            var decryptedByteCount = cryptoStream.Read(plainTextBytes, 0, plainTextBytes.Length);
-            memoryStream.Close();
-            cryptoStream.Close();
+            var decryptedByteCount = cryptoStream.Read(plainTextBytes);  
+
+            while (decryptedByteCount < plainTextBytes.Length)
+            {
+                Memory<byte> buffer = plainTextBytes.AsMemory(decryptedByteCount, plainTextBytes.Length - decryptedByteCount);
+                int bytesRead =  await cryptoStream.ReadAsync(buffer)
+                    .ConfigureAwait(false);
+                if (bytesRead == 0) break;
+                decryptedByteCount += bytesRead;
+            }
+
             return plainTextBytes[0..decryptedByteCount];
         }
 
         private static byte[] Generate256BitsOfRandomEntropy()
         {
-            //var randomBytes = RandomNumberGenerator.GetBytes(16); //Todo: Commented because it is impossible to do on .net 5;
-            //return randomBytes;
-
-            var randomBytes = new byte[16]; // 32 Bytes will give us 256 bits.
-            using (var rngCsp = new RNGCryptoServiceProvider())
-            {
-                // Fill the array with cryptographically secure random bytes.
-                rngCsp.GetBytes(randomBytes);
-            }
-            return randomBytes;
+            var randomBytes = RandomNumberGenerator.GetBytes(16); 
+            return randomBytes;       
         }
 
     }
